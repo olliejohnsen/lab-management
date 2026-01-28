@@ -51,10 +51,9 @@ export function getAgentTools(): Tool[] {
           },
         });
 
-        const metrics = MetricsService.getInstance();
         const hostsWithMetrics = await Promise.all(
           hosts.map(async (host) => {
-            const hostMetrics = await metrics.getHostMetrics(host.id);
+            const hostMetrics = await MetricsService.collectHostMetrics(host.id);
             return {
               ...host,
               metrics: hostMetrics,
@@ -98,8 +97,7 @@ export function getAgentTools(): Tool[] {
           throw new Error(`Host with ID ${hostId} not found`);
         }
 
-        const metrics = MetricsService.getInstance();
-        const hostMetrics = await metrics.getHostMetrics(hostId);
+        const hostMetrics = await MetricsService.collectHostMetrics(hostId);
 
         // Get container details
         const connManager = DockerConnectionManager.getInstance();
@@ -375,15 +373,13 @@ export function getAgentTools(): Tool[] {
         required: [],
       },
       execute: async () => {
-        const metrics = MetricsService.getInstance();
-        const allMetrics = await metrics.getAllMetrics();
+        const allMetrics = await MetricsService.getLatestMetricsForAllHosts();
 
         // Calculate aggregates
         let totalHosts = 0;
         let totalCPU = 0;
         let totalRAM = 0;
         let totalDisk = 0;
-        let totalContainers = 0;
         let totalPorts = 0;
 
         for (const [hostId, hostMetrics] of Object.entries(allMetrics)) {
@@ -392,7 +388,6 @@ export function getAgentTools(): Tool[] {
             totalCPU += hostMetrics.cpuUsage || 0;
             totalRAM += hostMetrics.ramUsage || 0;
             totalDisk += hostMetrics.diskUsage || 0;
-            totalContainers += hostMetrics.containerCount || 0;
             totalPorts += hostMetrics.usedPorts?.length || 0;
           }
         }
@@ -404,7 +399,6 @@ export function getAgentTools(): Tool[] {
         return {
           summary: {
             totalHosts,
-            totalContainers,
             totalPorts,
             averageCPU: Math.round(avgCPU),
             averageRAM: Math.round(avgRAM),
@@ -440,12 +434,11 @@ export function getAgentTools(): Tool[] {
           return { message: "No hosts available" };
         }
 
-        const metrics = MetricsService.getInstance();
         let bestHost = hosts[0];
         let bestScore = 0;
 
         for (const host of hosts) {
-          const hostMetrics = await metrics.getHostMetrics(host.id);
+          const hostMetrics = await MetricsService.collectHostMetrics(host.id);
           if (hostMetrics) {
             const score =
               (100 - hostMetrics.cpuUsage) +
