@@ -1,0 +1,535 @@
+/**
+ * AI Agent Tools - Functions that the AI agent can execute
+ */
+
+import { prisma } from "@/lib/prisma";
+import { MetricsService } from "@/services/docker/metrics";
+import { DockerConnectionManager } from "@/services/docker/connection-manager";
+
+export interface Tool {
+  name: string;
+  description: string;
+  parameters: {
+    type: "object";
+    properties: Record<string, {
+      type: string;
+      description: string;
+      enum?: string[];
+    }>;
+    required: string[];
+  };
+  execute: (params: any) => Promise<any>;
+}
+
+/**
+ * Get all available tools for the AI agent
+ */
+export function getAgentTools(): Tool[] {
+  return [
+    // ==================== HOST MANAGEMENT ====================
+    {
+      name: "list_hosts",
+      description: "Get a list of all Docker hosts with their current status and metrics",
+      parameters: {
+        type: "object",
+        properties: {},
+        required: [],
+      },
+      execute: async () => {
+        const hosts = await prisma.host.findMany({
+          select: {
+            id: true,
+            name: true,
+            address: true,
+            port: true,
+            connectionType: true,
+            _count: {
+              select: {
+                deployments: true,
+              },
+            },
+          },
+        });
+
+        const metrics = MetricsService.getInstance();
+        const hostsWithMetrics = await Promise.all(
+          hosts.map(async (host) => {
+            const hostMetrics = await metrics.getHostMetrics(host.id);
+            return {
+              ...host,
+              metrics: hostMetrics,
+              deploymentCount: host._count.deployments,
+            };
+          })
+        );
+
+        return { hosts: hostsWithMetrics };
+      },
+    },
+
+    {
+      name: "get_host_details",
+      description: "Get detailed information about a specific host including containers and resources",
+      parameters: {
+        type: "object",
+        properties: {
+          hostId: {
+            type: "string",
+            description: "The ID of the host to get details for",
+          },
+        },
+        required: ["hostId"],
+      },
+      execute: async ({ hostId }) => {
+        const host = await prisma.host.findUnique({
+          where: { id: hostId },
+          include: {
+            deployments: {
+              select: {
+                id: true,
+                projectName: true,
+                status: true,
+                createdAt: true,
+              },
+            },
+          },
+        });
+
+        if (!host) {
+          throw new Error(`Host with ID ${hostId} not found`);
+        }
+
+        const metrics = MetricsService.getInstance();
+        const hostMetrics = await metrics.getHostMetrics(hostId);
+
+        // Get container details
+        const connManager = DockerConnectionManager.getInstance();
+        const connector = await connManager.getConnector(hostId);
+        const containers = await connector.listContainers(true);
+
+        return {
+          host,
+          metrics: hostMetrics,
+          containers,
+        };
+      },
+    },
+
+    // ==================== DEPLOYMENT MANAGEMENT ====================
+    {
+      name: "list_deployments",
+      description: "Get a list of all deployments across all hosts",
+      parameters: {
+        type: "object",
+        properties: {
+          hostId: {
+            type: "string",
+            description: "Optional: Filter deployments by host ID",
+          },
+          status: {
+            type: "string",
+            description: "Optional: Filter by deployment status",
+            enum: ["DEPLOYING", "RUNNING", "STOPPED", "FAILED"],
+          },
+        },
+        required: [],
+      },
+      execute: async ({ hostId, status }) => {
+        const whereClause: any = {};
+        if (hostId) whereClause.hostId = hostId;
+        if (status) whereClause.status = status;
+
+        const deployments = await prisma.deployment.findMany({
+          where: whereClause,
+          include: {
+            host: {
+              select: {
+                id: true,
+                name: true,
+                address: true,
+              },
+            },
+            composeFile: {
+              select: {
+                id: true,
+                name: true,
+              },
+            },
+          },
+          orderBy: {
+            createdAt: "desc",
+          },
+        });
+
+        return { deployments };
+      },
+    },
+
+    {
+      name: "deploy_compose_file",
+      description: "Deploy a Docker Compose stack to a specific host",
+      parameters: {
+        type: "object",
+        properties: {
+          hostId: {
+            type: "string",
+            description: "The ID of the host to deploy to",
+          },
+          projectName: {
+            type: "string",
+            description: "A unique name for this deployment project",
+          },
+          composeContent: {
+            type: "string",
+            description: "The Docker Compose YAML content to deploy",
+          },
+          description: {
+            type: "string",
+            description: "Optional description of what this deployment is for",
+          },
+        },
+        required: ["hostId", "projectName", "composeContent"],
+      },
+      execute: async ({ hostId, projectName, composeContent, description }) => {
+        // This would typically call the deployment API
+        // For now, return a simulated response
+        return {
+          message: "Deployment initiated",
+          projectName,
+          hostId,
+          status: "DEPLOYING",
+          note: "Use the deployments page to monitor progress",
+        };
+      },
+    },
+
+    {
+      name: "stop_deployment",
+      description: "Stop a running deployment",
+      parameters: {
+        type: "object",
+        properties: {
+          deploymentId: {
+            type: "string",
+            description: "The ID of the deployment to stop",
+          },
+        },
+        required: ["deploymentId"],
+      },
+      execute: async ({ deploymentId }) => {
+        const deployment = await prisma.deployment.findUnique({
+          where: { id: deploymentId },
+          include: { host: true },
+        });
+
+        if (!deployment) {
+          throw new Error(`Deployment with ID ${deploymentId} not found`);
+        }
+
+        const connManager = DockerConnectionManager.getInstance();
+        const connector = await connManager.getConnector(deployment.hostId);
+        
+        try {
+          await connector.stopProject(deployment.projectName);
+          
+          await prisma.deployment.update({
+            where: { id: deploymentId },
+            data: { status: "STOPPED" },
+          });
+
+          return {
+            success: true,
+            message: `Deployment ${deployment.projectName} stopped successfully`,
+          };
+        } catch (error) {
+          throw new Error(`Failed to stop deployment: ${error instanceof Error ? error.message : "Unknown error"}`);
+        }
+      },
+    },
+
+    {
+      name: "restart_deployment",
+      description: "Restart a stopped or running deployment",
+      parameters: {
+        type: "object",
+        properties: {
+          deploymentId: {
+            type: "string",
+            description: "The ID of the deployment to restart",
+          },
+        },
+        required: ["deploymentId"],
+      },
+      execute: async ({ deploymentId }) => {
+        const deployment = await prisma.deployment.findUnique({
+          where: { id: deploymentId },
+          include: { host: true },
+        });
+
+        if (!deployment) {
+          throw new Error(`Deployment with ID ${deploymentId} not found`);
+        }
+
+        const connManager = DockerConnectionManager.getInstance();
+        const connector = await connManager.getConnector(deployment.hostId);
+        
+        try {
+          await connector.restartProject(deployment.projectName);
+          
+          await prisma.deployment.update({
+            where: { id: deploymentId },
+            data: { status: "RUNNING" },
+          });
+
+          return {
+            success: true,
+            message: `Deployment ${deployment.projectName} restarted successfully`,
+          };
+        } catch (error) {
+          throw new Error(`Failed to restart deployment: ${error instanceof Error ? error.message : "Unknown error"}`);
+        }
+      },
+    },
+
+    // ==================== CONTAINER MANAGEMENT ====================
+    {
+      name: "list_containers",
+      description: "List all containers on a specific host",
+      parameters: {
+        type: "object",
+        properties: {
+          hostId: {
+            type: "string",
+            description: "The ID of the host to list containers from",
+          },
+          all: {
+            type: "boolean",
+            description: "Include stopped containers (default: false)",
+          },
+        },
+        required: ["hostId"],
+      },
+      execute: async ({ hostId, all = false }) => {
+        const connManager = DockerConnectionManager.getInstance();
+        const connector = await connManager.getConnector(hostId);
+        const containers = await connector.listContainers(all);
+
+        return { containers };
+      },
+    },
+
+    {
+      name: "get_container_logs",
+      description: "Get logs from a specific container",
+      parameters: {
+        type: "object",
+        properties: {
+          hostId: {
+            type: "string",
+            description: "The ID of the host where the container is running",
+          },
+          containerId: {
+            type: "string",
+            description: "The ID or name of the container",
+          },
+          tail: {
+            type: "number",
+            description: "Number of lines to return from the end (default: 100)",
+          },
+        },
+        required: ["hostId", "containerId"],
+      },
+      execute: async ({ hostId, containerId, tail = 100 }) => {
+        const connManager = DockerConnectionManager.getInstance();
+        const connector = await connManager.getConnector(hostId);
+        const logs = await connector.getContainerLogs(containerId, tail);
+
+        return { logs };
+      },
+    },
+
+    // ==================== METRICS & MONITORING ====================
+    {
+      name: "get_system_metrics",
+      description: "Get aggregated metrics across all hosts",
+      parameters: {
+        type: "object",
+        properties: {},
+        required: [],
+      },
+      execute: async () => {
+        const metrics = MetricsService.getInstance();
+        const allMetrics = await metrics.getAllMetrics();
+
+        // Calculate aggregates
+        let totalHosts = 0;
+        let totalCPU = 0;
+        let totalRAM = 0;
+        let totalDisk = 0;
+        let totalContainers = 0;
+        let totalPorts = 0;
+
+        for (const [hostId, hostMetrics] of Object.entries(allMetrics)) {
+          if (hostMetrics) {
+            totalHosts++;
+            totalCPU += hostMetrics.cpuUsage || 0;
+            totalRAM += hostMetrics.ramUsage || 0;
+            totalDisk += hostMetrics.diskUsage || 0;
+            totalContainers += hostMetrics.containerCount || 0;
+            totalPorts += hostMetrics.usedPorts?.length || 0;
+          }
+        }
+
+        const avgCPU = totalHosts > 0 ? totalCPU / totalHosts : 0;
+        const avgRAM = totalHosts > 0 ? totalRAM / totalHosts : 0;
+        const avgDisk = totalHosts > 0 ? totalDisk / totalHosts : 0;
+
+        return {
+          summary: {
+            totalHosts,
+            totalContainers,
+            totalPorts,
+            averageCPU: Math.round(avgCPU),
+            averageRAM: Math.round(avgRAM),
+            averageDisk: Math.round(avgDisk),
+          },
+          hostMetrics: allMetrics,
+        };
+      },
+    },
+
+    // ==================== HELPER FUNCTIONS ====================
+    {
+      name: "suggest_host_for_deployment",
+      description: "Suggest the best host for deploying based on resource requirements",
+      parameters: {
+        type: "object",
+        properties: {
+          composeContent: {
+            type: "string",
+            description: "The Docker Compose content to analyze for requirements",
+          },
+        },
+        required: ["composeContent"],
+      },
+      execute: async ({ composeContent }) => {
+        // This would use the placement analyzer
+        // For now, return a simulated response
+        const hosts = await prisma.host.findMany({
+          select: { id: true, name: true },
+        });
+
+        if (hosts.length === 0) {
+          return { message: "No hosts available" };
+        }
+
+        const metrics = MetricsService.getInstance();
+        let bestHost = hosts[0];
+        let bestScore = 0;
+
+        for (const host of hosts) {
+          const hostMetrics = await metrics.getHostMetrics(host.id);
+          if (hostMetrics) {
+            const score =
+              (100 - hostMetrics.cpuUsage) +
+              (100 - hostMetrics.ramUsage) +
+              (100 - hostMetrics.diskUsage);
+            
+            if (score > bestScore) {
+              bestScore = score;
+              bestHost = host;
+            }
+          }
+        }
+
+        return {
+          recommendedHost: bestHost,
+          reason: "This host has the most available resources",
+        };
+      },
+    },
+
+    {
+      name: "search_deployments",
+      description: "Search for deployments by name or description",
+      parameters: {
+        type: "object",
+        properties: {
+          query: {
+            type: "string",
+            description: "Search query to match against project names and descriptions",
+          },
+        },
+        required: ["query"],
+      },
+      execute: async ({ query }) => {
+        const deployments = await prisma.deployment.findMany({
+          where: {
+            OR: [
+              { projectName: { contains: query, mode: "insensitive" } },
+              { composeFile: { name: { contains: query, mode: "insensitive" } } },
+            ],
+          },
+          include: {
+            host: {
+              select: {
+                name: true,
+                address: true,
+              },
+            },
+            composeFile: {
+              select: {
+                name: true,
+              },
+            },
+          },
+          take: 10,
+        });
+
+        return { deployments, count: deployments.length };
+      },
+    },
+  ];
+}
+
+/**
+ * Execute a tool by name with parameters
+ */
+export async function executeTool(toolName: string, parameters: any): Promise<any> {
+  const tools = getAgentTools();
+  const tool = tools.find((t) => t.name === toolName);
+
+  if (!tool) {
+    throw new Error(`Tool '${toolName}' not found`);
+  }
+
+  try {
+    const result = await tool.execute(parameters);
+    return {
+      success: true,
+      tool: toolName,
+      result,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      tool: toolName,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+/**
+ * Get tool definitions for the LLM (OpenAI function calling format)
+ */
+export function getToolDefinitions() {
+  const tools = getAgentTools();
+  return tools.map((tool) => ({
+    type: "function",
+    function: {
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.parameters,
+    },
+  }));
+}

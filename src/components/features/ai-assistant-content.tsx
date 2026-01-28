@@ -30,10 +30,30 @@ import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "@/lib/utils";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
+interface AgentStep {
+  type: "thinking" | "tool_call" | "response";
+  content: string;
+  toolCall?: {
+    id: string;
+    tool: string;
+    parameters: any;
+  };
+  toolResult?: {
+    id: string;
+    tool: string;
+    success: boolean;
+    result?: any;
+    error?: string;
+  };
+  timestamp: number;
+}
+
 interface Message {
   role: "user" | "assistant";
   content: string;
   isCompose?: boolean;
+  steps?: AgentStep[];
+  toolsUsed?: string[];
 }
 
 export function AIAssistantContent() {
@@ -43,6 +63,7 @@ export function AIAssistantContent() {
   const [generatedCompose, setGeneratedCompose] = useState("");
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [conversationHistory, setConversationHistory] = useState<any[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -61,30 +82,47 @@ export function AIAssistantContent() {
     setPrompt("");
 
     try {
-      const response = await fetch("/api/ai/generate", {
+      const response = await fetch("/api/ai/agent", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: activePrompt }),
+        body: JSON.stringify({ 
+          message: activePrompt,
+          conversationHistory 
+        }),
       });
 
       if (response.ok) {
         const data = await response.json();
-        setGeneratedCompose(data.composeContent);
+        
+        // Update conversation history
+        setConversationHistory(data.conversationHistory || []);
         
         const assistantMessage: Message = {
           role: "assistant",
-          content: data.composeContent,
-          isCompose: true
+          content: data.message,
+          steps: data.steps,
+          toolsUsed: data.toolsUsed,
+          isCompose: data.message.includes("version:") && data.message.includes("services:")
         };
+        
         setMessages((prev) => [...prev, assistantMessage]);
-        toast.success("Infrastructure generated!");
+        
+        if (assistantMessage.isCompose) {
+          setGeneratedCompose(data.message);
+        }
+        
+        if (data.toolsUsed && data.toolsUsed.length > 0) {
+          toast.success(`Agent used ${data.toolsUsed.length} tool(s)`);
+        } else {
+          toast.success("Agent responded!");
+        }
       } else {
         const error = await response.json();
-        toast.error(`Generation failed: ${error.error}`);
+        toast.error(`Agent failed: ${error.error}`);
       }
     } catch (error) {
-      console.error("Failed to generate:", error);
-      toast.error("Failed to generate compose file");
+      console.error("Failed to communicate with agent:", error);
+      toast.error("Failed to communicate with AI agent");
     } finally {
       setLoading(false);
     }
@@ -113,10 +151,10 @@ export function AIAssistantContent() {
   };
 
   const examples = [
-    { title: "Database", prompt: "Give me a docker compose for postgres with pgAdmin", icon: Database },
-    { title: "AI Stack", prompt: "I want to spin up Langflow with a vector db", icon: Sparkles },
-    { title: "Web Server", prompt: "Create a compose for nginx with SSL and a hello world page", icon: GlobeIcon },
-    { title: "Caching", prompt: "Deploy Redis with persistence and a dashboard", icon: Zap },
+    { title: "Infrastructure Status", prompt: "What hosts do I have and what's their resource usage?", icon: Database },
+    { title: "Deploy Stack", prompt: "Deploy PostgreSQL to my best server", icon: Rocket },
+    { title: "Troubleshoot", prompt: "Why is my deployment failing? Show me the logs", icon: Terminal },
+    { title: "Quick Action", prompt: "Stop all deployments on host raspberry-pi", icon: Zap },
   ];
 
   return (
@@ -129,10 +167,10 @@ export function AIAssistantContent() {
               <div className="p-2 rounded-2xl bg-primary/10 text-primary">
                 <Sparkles className="h-8 w-8" />
               </div>
-              AI Assistant
+              AI Agent
             </h1>
             <p className="text-slate-500 max-w-2xl font-medium mt-1">
-              Describe your infrastructure in plain English and let the AI build your Docker Compose files.
+              Your autonomous AI agent that can query infrastructure, deploy applications, manage containers, and answer questions.
             </p>
           </div>
         </div>
@@ -145,9 +183,9 @@ export function AIAssistantContent() {
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <div className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
-                    <span className="text-sm font-bold text-slate-700 uppercase tracking-wider">AI Architect Online</span>
+                    <span className="text-sm font-bold text-slate-700 uppercase tracking-wider">Autonomous Agent Online</span>
                   </div>
-                  <Badge variant="outline" className="bg-slate-50 text-slate-400 border-slate-200">Ollama / Llama 3.2</Badge>
+                  <Badge variant="outline" className="bg-slate-50 text-slate-400 border-slate-200">AI Agent • Llama 3.2</Badge>
                 </div>
               </CardHeader>
               
@@ -160,9 +198,9 @@ export function AIAssistantContent() {
                           <Bot className="h-12 w-12 text-primary/40" />
                         </div>
                         <div className="space-y-2">
-                          <h3 className="text-xl font-extrabold text-slate-900">How can I help you build today?</h3>
+                          <h3 className="text-xl font-extrabold text-slate-900">How can I help you today?</h3>
                           <p className="text-slate-500 max-w-sm mx-auto font-medium">
-                            I can generate complex Docker Compose stacks, set up networks, and configure persistent storage.
+                            I&apos;m an autonomous agent that can query your infrastructure, deploy applications, manage containers, troubleshoot issues, and answer questions.
                           </p>
                         </div>
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 w-full max-w-lg">
@@ -202,6 +240,80 @@ export function AIAssistantContent() {
                           "max-w-[85%] space-y-2",
                           message.role === "user" ? "items-end" : "items-start"
                         )}>
+                          {/* Show agent steps (thinking, tool calls) */}
+                          {message.steps && message.steps.length > 0 && (
+                            <div className="space-y-2 mb-3">
+                              {message.steps.map((step, stepIdx) => (
+                                <div key={stepIdx} className="space-y-1">
+                                  {step.type === "thinking" && (
+                                    <div className="flex items-start gap-2 text-xs text-slate-500 bg-slate-50 rounded-lg p-3 border border-slate-100">
+                                      <Lightbulb className="h-3.5 w-3.5 mt-0.5 text-amber-500" />
+                                      <div className="flex-1">
+                                        <div className="font-bold text-slate-700 mb-1">Thinking...</div>
+                                        <div>{step.content}</div>
+                                      </div>
+                                    </div>
+                                  )}
+                                  {step.type === "tool_call" && step.toolCall && (
+                                    <div className="flex items-start gap-2 text-xs bg-blue-50 rounded-lg p-3 border border-blue-100">
+                                      <Terminal className="h-3.5 w-3.5 mt-0.5 text-blue-600" />
+                                      <div className="flex-1">
+                                        <div className="font-bold text-blue-900 mb-1">Tool: {step.toolCall.tool}</div>
+                                        <pre className="text-[10px] text-blue-700 overflow-x-auto">
+                                          {JSON.stringify(step.toolCall.parameters, null, 2)}
+                                        </pre>
+                                      </div>
+                                    </div>
+                                  )}
+                                  {step.type === "tool_call" && step.toolResult && (
+                                    <div className={cn(
+                                      "flex items-start gap-2 text-xs rounded-lg p-3 border ml-6",
+                                      step.toolResult.success 
+                                        ? "bg-green-50 border-green-100" 
+                                        : "bg-red-50 border-red-100"
+                                    )}>
+                                      {step.toolResult.success ? (
+                                        <Check className="h-3.5 w-3.5 mt-0.5 text-green-600" />
+                                      ) : (
+                                        <span className="text-red-600 font-bold">✗</span>
+                                      )}
+                                      <div className="flex-1">
+                                        <div className={cn(
+                                          "font-bold mb-1",
+                                          step.toolResult.success ? "text-green-900" : "text-red-900"
+                                        )}>
+                                          {step.toolResult.success ? "Result" : "Error"}
+                                        </div>
+                                        <pre className={cn(
+                                          "text-[10px] overflow-x-auto max-h-32",
+                                          step.toolResult.success ? "text-green-700" : "text-red-700"
+                                        )}>
+                                          {step.toolResult.success 
+                                            ? JSON.stringify(step.toolResult.result, null, 2)
+                                            : step.toolResult.error
+                                          }
+                                        </pre>
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          {/* Show tools used badge */}
+                          {message.toolsUsed && message.toolsUsed.length > 0 && (
+                            <div className="flex flex-wrap gap-1 mb-2">
+                              {message.toolsUsed.map((tool, toolIdx) => (
+                                <Badge key={toolIdx} variant="secondary" className="text-[10px] font-bold">
+                                  <Zap className="h-2.5 w-2.5 mr-1" />
+                                  {tool}
+                                </Badge>
+                              ))}
+                            </div>
+                          )}
+
+                          {/* Main message content */}
                           {message.isCompose ? (
                             <div className="space-y-3">
                               <div className="rounded-2xl bg-slate-900 text-slate-100 p-1 shadow-2xl overflow-hidden border border-slate-800">
@@ -280,7 +392,7 @@ export function AIAssistantContent() {
                 <div className="p-6 bg-white border-t border-slate-100">
                   <div className="relative flex items-center">
                     <Input
-                      placeholder="Describe your infrastructure (e.g. 'Postgres with Redis and a Node.js frontend')..."
+                      placeholder="Ask me anything: 'Show my hosts', 'Deploy PostgreSQL', 'What's using the most resources?'..."
                       value={prompt}
                       onChange={(e) => setPrompt(e.target.value)}
                       onKeyDown={(e) => {
@@ -301,7 +413,7 @@ export function AIAssistantContent() {
                     </Button>
                   </div>
                   <p className="mt-3 text-[10px] text-center font-bold uppercase tracking-widest text-slate-400">
-                    Powered by Ollama Local Intelligence
+                    Autonomous AI Agent • Powered by Ollama
                   </p>
                 </div>
               </CardContent>
@@ -322,10 +434,10 @@ export function AIAssistantContent() {
               </CardHeader>
               <CardContent className="space-y-4">
                 {[
-                  { title: "Persistence", desc: "Mention if you need volumes for your databases." },
-                  { title: "Networking", desc: "Ask for specific network configurations if needed." },
-                  { title: "Environment", desc: "Specify required environment variables for your apps." },
-                  { title: "Versions", desc: "You can request specific image tags like 'postgres:16-alpine'." }
+                  { title: "Query Infrastructure", desc: "Ask about hosts, deployments, containers, and resource usage." },
+                  { title: "Execute Actions", desc: "Deploy, stop, restart, or troubleshoot your applications." },
+                  { title: "Get Recommendations", desc: "Ask for the best host to deploy to based on resources." },
+                  { title: "Multi-Step Tasks", desc: "The agent can execute multiple actions to complete complex requests." }
                 ].map((tip, i) => (
                   <div key={i} className="flex gap-3 p-3 rounded-xl hover:bg-slate-50 transition-colors border border-transparent hover:border-slate-100 group">
                     <div className="h-5 w-5 rounded-full bg-slate-100 flex items-center justify-center text-[10px] font-bold text-slate-400 group-hover:bg-amber-100 group-hover:text-amber-600 transition-colors shrink-0">{i+1}</div>
