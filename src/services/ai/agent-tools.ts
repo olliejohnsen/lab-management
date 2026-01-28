@@ -36,11 +36,11 @@ export function getAgentTools(): Tool[] {
         required: [],
       },
       execute: async () => {
-        const hosts = await prisma.host.findMany({
+        const hosts = await prisma.dockerHost.findMany({
           select: {
             id: true,
             name: true,
-            address: true,
+            host: true,
             port: true,
             connectionType: true,
             _count: {
@@ -81,15 +81,14 @@ export function getAgentTools(): Tool[] {
         required: ["hostId"],
       },
       execute: async ({ hostId }) => {
-        const host = await prisma.host.findUnique({
+        const host = await prisma.dockerHost.findUnique({
           where: { id: hostId },
           include: {
             deployments: {
               select: {
                 id: true,
-                projectName: true,
                 status: true,
-                createdAt: true,
+                deployedAt: true,
               },
             },
           },
@@ -146,7 +145,7 @@ export function getAgentTools(): Tool[] {
               select: {
                 id: true,
                 name: true,
-                address: true,
+                host: true,
               },
             },
             composeFile: {
@@ -157,11 +156,21 @@ export function getAgentTools(): Tool[] {
             },
           },
           orderBy: {
-            createdAt: "desc",
+            deployedAt: "desc",
           },
         });
 
-        return { deployments };
+        // Parse metadata to extract projectName
+        const deploymentsWithProjectName = deployments.map((d) => {
+          try {
+            const metadata = d.metadata ? JSON.parse(d.metadata) : {};
+            return { ...d, projectName: metadata.projectName || d.composeFile.name };
+          } catch {
+            return { ...d, projectName: d.composeFile.name };
+          }
+        });
+
+        return { deployments: deploymentsWithProjectName };
       },
     },
 
@@ -219,18 +228,22 @@ export function getAgentTools(): Tool[] {
       execute: async ({ deploymentId }) => {
         const deployment = await prisma.deployment.findUnique({
           where: { id: deploymentId },
-          include: { host: true },
+          include: { host: true, composeFile: true },
         });
 
         if (!deployment) {
           throw new Error(`Deployment with ID ${deploymentId} not found`);
         }
 
+        // Extract projectName from metadata
+        const metadata = deployment.metadata ? JSON.parse(deployment.metadata) : {};
+        const projectName = metadata.projectName || deployment.composeFile.name;
+
         const connManager = DockerConnectionManager.getInstance();
         const connector = await connManager.getConnector(deployment.hostId);
         
         try {
-          await connector.stopProject(deployment.projectName);
+          await connector.stopProject(projectName);
           
           await prisma.deployment.update({
             where: { id: deploymentId },
@@ -239,7 +252,7 @@ export function getAgentTools(): Tool[] {
 
           return {
             success: true,
-            message: `Deployment ${deployment.projectName} stopped successfully`,
+            message: `Deployment ${projectName} stopped successfully`,
           };
         } catch (error) {
           throw new Error(`Failed to stop deployment: ${error instanceof Error ? error.message : "Unknown error"}`);
@@ -263,27 +276,31 @@ export function getAgentTools(): Tool[] {
       execute: async ({ deploymentId }) => {
         const deployment = await prisma.deployment.findUnique({
           where: { id: deploymentId },
-          include: { host: true },
+          include: { host: true, composeFile: true },
         });
 
         if (!deployment) {
           throw new Error(`Deployment with ID ${deploymentId} not found`);
         }
 
+        // Extract projectName from metadata
+        const metadata = deployment.metadata ? JSON.parse(deployment.metadata) : {};
+        const projectName = metadata.projectName || deployment.composeFile.name;
+
         const connManager = DockerConnectionManager.getInstance();
         const connector = await connManager.getConnector(deployment.hostId);
         
         try {
-          await connector.restartProject(deployment.projectName);
+          await connector.restartProject(projectName);
           
           await prisma.deployment.update({
             where: { id: deploymentId },
-            data: { status: "RUNNING" },
+            data: { status: "running" },
           });
 
           return {
             success: true,
-            message: `Deployment ${deployment.projectName} restarted successfully`,
+            message: `Deployment ${projectName} restarted successfully`,
           };
         } catch (error) {
           throw new Error(`Failed to restart deployment: ${error instanceof Error ? error.message : "Unknown error"}`);
@@ -415,7 +432,7 @@ export function getAgentTools(): Tool[] {
       execute: async ({ composeContent }) => {
         // This would use the placement analyzer
         // For now, return a simulated response
-        const hosts = await prisma.host.findMany({
+        const hosts = await prisma.dockerHost.findMany({
           select: { id: true, name: true },
         });
 
@@ -463,18 +480,20 @@ export function getAgentTools(): Tool[] {
         required: ["query"],
       },
       execute: async ({ query }) => {
-        const deployments = await prisma.deployment.findMany({
+        // Get all deployments and filter by projectName in memory
+        // since projectName is stored in metadata JSON
+        const allDeployments = await prisma.deployment.findMany({
           where: {
             OR: [
-              { projectName: { contains: query, mode: "insensitive" } },
               { composeFile: { name: { contains: query, mode: "insensitive" } } },
+              { metadata: { contains: query } }, // Simple contains check for metadata
             ],
           },
           include: {
             host: {
               select: {
                 name: true,
-                address: true,
+                host: true,
               },
             },
             composeFile: {
@@ -483,8 +502,24 @@ export function getAgentTools(): Tool[] {
               },
             },
           },
-          take: 10,
+          take: 20,
         });
+
+        // Parse metadata and filter more precisely
+        const deployments = allDeployments
+          .map((d) => {
+            try {
+              const metadata = d.metadata ? JSON.parse(d.metadata) : {};
+              return { ...d, projectName: metadata.projectName || d.composeFile.name };
+            } catch {
+              return { ...d, projectName: d.composeFile.name };
+            }
+          })
+          .filter((d) =>
+            d.projectName.toLowerCase().includes(query.toLowerCase()) ||
+            d.composeFile.name.toLowerCase().includes(query.toLowerCase())
+          )
+          .slice(0, 10);
 
         return { deployments, count: deployments.length };
       },

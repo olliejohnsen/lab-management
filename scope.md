@@ -178,7 +178,9 @@ src/
 - Role-based access control (Admin vs. User permissions)
 - Secure password hashing and storage
 
-## Future Enhancements (Out of Scope for v1)- Multi-user role management
+## Future Enhancements (Out of Scope for v1)
+
+- Multi-user role management
 - Application health monitoring
 - Automated backup scheduling
 - Resource usage alerts and notifications
