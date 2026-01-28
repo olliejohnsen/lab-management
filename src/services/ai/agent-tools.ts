@@ -251,7 +251,7 @@ export function getAgentTools(): Tool[] {
         );
         
         try {
-          await connector.stopProject(projectName);
+          await connector.stopDeployment(projectName);
           
           await prisma.deployment.update({
             where: { id: deploymentId },
@@ -304,7 +304,7 @@ export function getAgentTools(): Tool[] {
         );
         
         try {
-          await connector.restartProject(projectName);
+          await connector.restartDeployment(projectName);
           
           await prisma.deployment.update({
             where: { id: deploymentId },
