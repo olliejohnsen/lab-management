@@ -100,8 +100,13 @@ export function getAgentTools(): Tool[] {
         const hostMetrics = await MetricsService.collectHostMetrics(hostId);
 
         // Get container details
-        const connManager = DockerConnectionManager.getInstance();
-        const connector = await connManager.getConnector(hostId);
+        const connector = await DockerConnectionManager.getConnector(
+          host.id,
+          host.connectionType,
+          host.host,
+          host.port,
+          host.credentials
+        );
         const containers = await connector.listContainers(true);
 
         return {
@@ -237,15 +242,20 @@ export function getAgentTools(): Tool[] {
         const metadata = deployment.metadata ? JSON.parse(deployment.metadata) : {};
         const projectName = metadata.projectName || deployment.composeFile.name;
 
-        const connManager = DockerConnectionManager.getInstance();
-        const connector = await connManager.getConnector(deployment.hostId);
+        const connector = await DockerConnectionManager.getConnector(
+          deployment.host.id,
+          deployment.host.connectionType,
+          deployment.host.host,
+          deployment.host.port,
+          deployment.host.credentials
+        );
         
         try {
           await connector.stopProject(projectName);
           
           await prisma.deployment.update({
             where: { id: deploymentId },
-            data: { status: "STOPPED" },
+            data: { status: "stopped" },
           });
 
           return {
@@ -285,8 +295,13 @@ export function getAgentTools(): Tool[] {
         const metadata = deployment.metadata ? JSON.parse(deployment.metadata) : {};
         const projectName = metadata.projectName || deployment.composeFile.name;
 
-        const connManager = DockerConnectionManager.getInstance();
-        const connector = await connManager.getConnector(deployment.hostId);
+        const connector = await DockerConnectionManager.getConnector(
+          deployment.host.id,
+          deployment.host.connectionType,
+          deployment.host.host,
+          deployment.host.port,
+          deployment.host.credentials
+        );
         
         try {
           await connector.restartProject(projectName);
@@ -325,8 +340,21 @@ export function getAgentTools(): Tool[] {
         required: ["hostId"],
       },
       execute: async ({ hostId, all = false }) => {
-        const connManager = DockerConnectionManager.getInstance();
-        const connector = await connManager.getConnector(hostId);
+        const host = await prisma.dockerHost.findUnique({
+          where: { id: hostId },
+        });
+
+        if (!host) {
+          throw new Error(`Host with ID ${hostId} not found`);
+        }
+
+        const connector = await DockerConnectionManager.getConnector(
+          host.id,
+          host.connectionType,
+          host.host,
+          host.port,
+          host.credentials
+        );
         const containers = await connector.listContainers(all);
 
         return { containers };
@@ -355,8 +383,21 @@ export function getAgentTools(): Tool[] {
         required: ["hostId", "containerId"],
       },
       execute: async ({ hostId, containerId, tail = 100 }) => {
-        const connManager = DockerConnectionManager.getInstance();
-        const connector = await connManager.getConnector(hostId);
+        const host = await prisma.dockerHost.findUnique({
+          where: { id: hostId },
+        });
+
+        if (!host) {
+          throw new Error(`Host with ID ${hostId} not found`);
+        }
+
+        const connector = await DockerConnectionManager.getConnector(
+          host.id,
+          host.connectionType,
+          host.host,
+          host.port,
+          host.credentials
+        );
         const logs = await connector.getContainerLogs(containerId, tail);
 
         return { logs };
