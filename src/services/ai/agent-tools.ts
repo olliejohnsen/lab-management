@@ -357,49 +357,6 @@ export function getAgentTools(): Tool[] {
       },
     },
 
-    {
-      name: "get_container_logs",
-      description: "Get logs from a specific container",
-      parameters: {
-        type: "object",
-        properties: {
-          hostId: {
-            type: "string",
-            description: "The ID of the host where the container is running",
-          },
-          containerId: {
-            type: "string",
-            description: "The ID or name of the container",
-          },
-          tail: {
-            type: "number",
-            description: "Number of lines to return from the end (default: 100)",
-          },
-        },
-        required: ["hostId", "containerId"],
-      },
-      execute: async ({ hostId, containerId, tail = 100 }) => {
-        const host = await prisma.dockerHost.findUnique({
-          where: { id: hostId },
-        });
-
-        if (!host) {
-          throw new Error(`Host with ID ${hostId} not found`);
-        }
-
-        const connector = await DockerConnectionManager.getConnector(
-          host.id,
-          host.connectionType,
-          host.host,
-          host.port,
-          host.credentials
-        );
-        const logs = await connector.getContainerLogs(containerId, tail);
-
-        return { logs };
-      },
-    },
-
     // ==================== METRICS & MONITORING ====================
     {
       name: "get_system_metrics",
