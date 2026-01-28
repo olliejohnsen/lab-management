@@ -30,10 +30,6 @@ WORKDIR /app
 # Set environment to production
 ENV NODE_ENV=production
 
-# Create non-root user
-RUN addgroup --system --gid 1001 nodejs
-RUN adduser --system --uid 1001 nextjs
-
 # Copy necessary files from builder
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/.next/standalone ./
@@ -45,10 +41,7 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/start-server.js ./start-server.js
 
 # Create data directory for SQLite
-RUN mkdir -p /data && chown -R nextjs:nodejs /data
-
-# Switch to non-root user
-USER nextjs
+RUN mkdir -p /data
 
 # Expose ports (3000 for Next.js, 3001 for WebSocket)
 EXPOSE 3000 3001
@@ -56,6 +49,5 @@ EXPOSE 3000 3001
 # Set DATABASE_URL to use /data volume
 ENV DATABASE_URL="file:/data/app.db"
 
-# Start the application
-# Remove old DB, run migrations, seed with default admin, then start server
+# Start the application (running as root to avoid permission issues)
 CMD ["sh", "-c", "rm -f /data/app.db && npx prisma migrate deploy && npx prisma db seed && npx tsx start-server.js"]
