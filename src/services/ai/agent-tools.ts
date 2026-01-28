@@ -472,8 +472,8 @@ export function getAgentTools(): Tool[] {
         const allDeployments = await prisma.deployment.findMany({
           where: {
             OR: [
-              { composeFile: { name: { contains: query, mode: "insensitive" } } },
-              { metadata: { contains: query } }, // Simple contains check for metadata
+              { composeFile: { name: { contains: query } } },
+              { metadata: { contains: query } },
             ],
           },
           include: {
