@@ -107,7 +107,7 @@ export function getAgentTools(): Tool[] {
           host.port,
           host.credentials
         );
-        const containers = await connector.listContainers(true);
+        const containers = await connector.listContainers();
 
         return {
           host,
@@ -332,14 +332,10 @@ export function getAgentTools(): Tool[] {
             type: "string",
             description: "The ID of the host to list containers from",
           },
-          all: {
-            type: "boolean",
-            description: "Include stopped containers (default: false)",
-          },
         },
         required: ["hostId"],
       },
-      execute: async ({ hostId, all = false }) => {
+      execute: async ({ hostId }) => {
         const host = await prisma.dockerHost.findUnique({
           where: { id: hostId },
         });
@@ -355,7 +351,7 @@ export function getAgentTools(): Tool[] {
           host.port,
           host.credentials
         );
-        const containers = await connector.listContainers(all);
+        const containers = await connector.listContainers();
 
         return { containers };
       },
